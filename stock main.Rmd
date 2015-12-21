@@ -1,0 +1,216 @@
+---
+title: "Stock Price Prediction"
+author: "Alice Xiong"
+date: "December 15, 2015"
+output: pdf_document
+---
+
+
+You can also embed plots, for example:
+
+```{r}
+library(lubridate)
+library(caret)
+library(forecast)
+library(AppliedPredictiveModeling)
+library(e1071)
+library(TTR)
+library(DMwR)
+library(neuralnet)
+library(sqldf)
+
+
+volume <- read.csv("volume.csv")
+prices <- read.csv("prices.csv")
+
+prices$Date = as.Date(prices$Date, origin = "1970-01-01")
+volume$Date = as.Date(volume$Date, "%m/%d/%Y")
+
+str = "select distinct symbol from prices"
+
+symbols=sqldf(str)$symbol
+
+str = "select distinct a.*, b.volume from 
+         prices a left join volume b
+         on a.symbol = b.ticker and a.Date=b.Date"
+prices=sqldf(str)
+
+prices$Volume = as.numeric(prices$Volume)
+
+for(i in 1:2){
+    symbol = symbols[i]
+    
+    price = prices[prices$symbol==symbol,]
+    
+    price <- price[order(price$Date),]
+    
+    prevrows <- function(data,n) {sapply(1:n,function(x) c(rep(NA,x),head(data,-x)))}
+    
+    price$Day <- as.numeric(as.POSIXlt(price$Date)$wday)
+    
+    price <- price[order(price$Date),] 
+    prevrows <- function(data,n) {sapply(1:n,function(x) c(rep(NA,x),head(data,-x)))}
+    
+    price$Day <- as.numeric(as.POSIXlt(price$Date)$wday)
+    
+    price$PrevClose <- prevrows(price$Close,1)
+    price$Change <- price$Close - price$PrevClose
+    price$Movement<-ifelse(price$Change > 0 ,1 , -1)
+    price$SMA30<-SMA(price$Close, n=30)
+    price$SMA10<-SMA(price$Close, n=10)
+    price$SMA5<-SMA(price$Close, n=5)
+    price$SMA3<-SMA(price$Close, n=3)
+    price$EMA30<-EMA(price$Close, n=30)
+    price$EMA10<-EMA(price$Close, n=10)
+    price$EMA5<-EMA(price$Close, n=5)
+    price$EMA3<-EMA(price$Close, n=3)
+    price$RSI30<-RSI(price$Close, n=30)
+    price$RSI10<-RSI(price$Close, n=10)
+    price$RSI5<-RSI(price$Close, n=5)
+    price$RSI3<-RSI(price$Close, n=3)
+    price$VOLEMA30<-EMA(price$Volume, n=30)
+    price$VOLEMA10<-EMA(price$Volume, n=10)
+    price$VOLEMA5<-EMA(price$Volume, n=5)
+    price$VOLEMA3<-EMA(price$Volume, n=3)
+    price$OBV<-OBV(price$Close, price$Volume)
+    
+    HLC<-as.matrix(cbind(price$High, price$Low, price$Close))
+    price$ATR<-ATR(HLC, n = 14)[,1]
+    
+    price$MACD<-as.data.frame((MACD(price$Close)))$macd
+    
+    price<-price[ which(complete.cases(price)==TRUE),]
+    
+    #today<-Sys.Date()
+    training = price[price$Date < as.Date("2007-12-03"),]
+    trainNN<-as.data.frame(cbind(training$Close,training$PrevClose,
+                                 training$Day,training$SMA30,training$SMA10,
+                                 training$SMA5,training$SMA3,training$EMA30,
+                                 training$EMA10,training$EMA5,training$EMA3,
+                                 training$RSI30,training$MACD,training$OBV,
+                                 training$Change
+    ))
+    
+    trainNN<-trainNN[ which(complete.cases(trainNN)==TRUE),]
+    trainNN<-cbind(trainNN$V1, trainNN$V2
+                   , prevrows(trainNN$V3,1)
+                   , prevrows(trainNN$V4,1)
+                   , prevrows(trainNN$V5,1)
+                   , prevrows(trainNN$V6,1)
+                   , prevrows(trainNN$V7,1)
+                   , prevrows(trainNN$V8,1)
+                   , prevrows(trainNN$V9,1)
+                   , prevrows(trainNN$V10,1)
+                   , prevrows(trainNN$V11,1)
+                   , prevrows(trainNN$V12,1)
+                   , prevrows(trainNN$V13,1)
+                   , prevrows(trainNN$V14,1)
+                   , prevrows(trainNN$V15,1)
+    )
+    trainNN<-trainNN[ which(complete.cases(trainNN)==TRUE),]
+    trainNNScaled<-as.data.frame(scale(lag(as.matrix(trainNN),1)))
+    
+    n <- names(trainNNScaled)
+    f <- as.formula(paste("V1 ~", paste(n[!n %in% "V1"], collapse = " + ")))
+    set.seed(12345)
+    net <- neuralnet(f,data=trainNNScaled, hidden=4, threshold=.01, rep=1)
+    
+    testing = price[price$Date >= as.Date("2007-12-03") & 
+                         price$Date <= as.Date("2007-12-21"),]
+    lastTrainingDay<-as.data.frame(tail(trainNN,1))
+    testNN<-rbind(lastTrainingDay,as.data.frame(cbind(testing$Close,testing$PrevClose,testing$Day,testing$SMA30,testing$SMA10,testing$SMA5,testing$SMA3,testing$EMA30,testing$EMA10,testing$EMA5,testing$EMA3,testing$RSI30,testing$MACD,testing$OBV,testing$Change
+    )))
+    
+    nextwday <- function(dy) {
+        ifelse(dy==5, 1, dy<-dy+1)
+    }
+    
+    testNN<-cbind(testNN$V1, testNN$V2
+                  , prevrows(testNN$V3,1)
+                  , prevrows(testNN$V4,1)
+                  , prevrows(testNN$V5,1)
+                  , prevrows(testNN$V6,1)
+                  , prevrows(testNN$V7,1)
+                  , prevrows(testNN$V8,1)
+                  , prevrows(testNN$V9,1)
+                  , prevrows(testNN$V10,1)
+                  , prevrows(testNN$V11,1)
+                  , prevrows(testNN$V12,1)
+                  , prevrows(testNN$V13,1)
+                  , prevrows(testNN$V14,1)
+                  , prevrows(testNN$V15,1)
+    )
+    testNN<-testNN[ which(complete.cases(testNN)==TRUE),]
+    lastDay<-as.data.frame(tail(testing,1))
+    nextDay<-as.data.frame(cbind(0,lastDay$Close,nextwday(as.data.frame(tail(testNN,1))$V3),
+                                 lastDay$SMA30,lastDay$SMA10,lastDay$SMA5,
+                                 lastDay$SMA3,lastDay$EMA30,lastDay$EMA10,
+                                 lastDay$EMA5,lastDay$EMA3,lastDay$RSI30,
+                                 lastDay$MACD,lastDay$OBV,lastDay$Change
+    ))
+    testNN<-rbind(testNN,nextDay)
+    
+    for (i in 1:5){
+        testNNScale <- scale(testNN, center = attr(scale(trainNN), 'scaled:center'), 
+                             scale = attr(scale(trainNN), 'scaled:scale'))
+        
+        net.results <- compute(net, as.data.frame(testNNScale)[-1])
+        results<-unscale(as.matrix(net.results$net.result)[,1], testNNScale)
+        
+        if(i==1){
+            cleanoutput <- cbind(testNN$V1,as.data.frame(results), 
+                                 abs(testNN$V1-as.data.frame(results))/testNN$V1*100)
+            colnames(cleanoutput) <- c("Expected Output","Neural Net Output", "Error %")
+            print(cleanoutput)
+            
+            print(sum(cleanoutput[which(cleanoutput$"Error %" < 100),]$"Error %")/(nrow(cleanoutput)-1))
+        }
+        
+        testNN[nrow(testNN),1]<-tail(as.data.frame(results),1)
+        
+        p<-rbind(trainNN,testNN)
+        SMA30<-tail(SMA(p$V1, n=30),1)
+        SMA10<-tail(SMA(p$V1, n=10),1)
+        SMA5<-tail(SMA(p$V1, n=5),1)
+        SMA3<-tail(SMA(p$V1, n=3),1)
+        EMA30<-tail(EMA(p$V1, n=30),1)
+        EMA10<-tail(EMA(p$V1, n=10),1)
+        EMA5<-tail(EMA(p$V1, n=5),1)
+        EMA3<-tail(EMA(p$V1, n=3),1)
+        RSI30<-tail(RSI(p$V1, n=30),1)
+        MACD<-tail(as.data.frame((MACD(p$V1)))$macd,1)
+        OBV<-tail(p$V14,1)
+        Change<-tail(as.data.frame(results),1)-head(tail(as.data.frame(results),2),1)
+        
+        nextDay<-as.data.frame(cbind(0,tail(as.data.frame(results),1),nextwday(as.data.frame(tail(testNN,1))$V3),
+                                     SMA30,SMA10,SMA5,SMA3,EMA30,EMA10,EMA5,EMA3,
+                                     RSI30,MACD,OBV,Change
+        ))
+        
+        names(nextDay) <- names(testNN)
+        testNN<-rbind(testNN,nextDay)
+    }
+    testNN<-testNN[-nrow(testNN),] 
+    
+    tail(testing,1)$Date
+    
+    predicts <- as.data.frame(cbind(as.Date(as.data.frame(rbind(as.Date(tail(testing,1)$Date)+3, 
+                                                                as.Date(tail(testing,1)$Date)+5,
+                                                                as.Date(tail(testing,1)$Date)+6,
+                                                                as.Date(tail(testing,1)$Date)+7,
+                                                                as.Date(tail(testing,1)$Date)+10))$V1),as.data.frame(tail(testNN,5)$V1)
+    ))
+    
+    colnames(predicts) <- c("Date", "Close")
+    actuals <- price[, c("Date", "Close")]
+    price<-rbind(actuals,predicts)
+    
+    plot(actuals$Date,actuals$Close,type = "l", xlab = "Date", 
+         ylab = "Price/$", col="blue", main="Stock price in 2007")
+    plot(predicts$Date,predicts$Close, xlab = "Date", type = "p",
+         ylab = "Price/$", col="blue",ylim = c(30,40), main = "predicted price and actual price")
+    points(actuals$Date[218:222],actuals$Close[218:222], xlab = "Date", ylab = "Price/$", col="red")
+    legend("bottomright", c("Predicted", "Actual"), col = c("red", "blue"), pch=c(1,1))
+    
+}
+```
